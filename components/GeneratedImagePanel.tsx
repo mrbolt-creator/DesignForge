@@ -6,9 +6,10 @@ import { DownloadMenu } from './DownloadMenu';
 interface GeneratedImagePanelProps {
     images: ImageData[];
     onEnhanceAndDownload: (image: ImageData) => void;
+    remainingGenerations?: number;
 }
 
-export const GeneratedImagePanel: React.FC<GeneratedImagePanelProps> = ({ images, onEnhanceAndDownload }) => {
+export const GeneratedImagePanel: React.FC<GeneratedImagePanelProps> = ({ images, onEnhanceAndDownload, remainingGenerations }) => {
     const [isOpen, setIsOpen] = useState(true);
     const [openMenuIndex, setOpenMenuIndex] = useState<number | null>(null);
 
@@ -50,6 +51,7 @@ export const GeneratedImagePanel: React.FC<GeneratedImagePanelProps> = ({ images
                                                     onEnhanceAndDownload={onEnhanceAndDownload}
                                                     onClose={() => setOpenMenuIndex(null)}
                                                     className="bottom-full mb-2 right-1/2 translate-x-1/2 w-48"
+                                                    remainingGenerations={remainingGenerations}
                                                 />
                                             )}
                                         </div>

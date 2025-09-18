@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { AppState, AspectRatio, ImageData, VisualStyle, AppMode, ChatMessage, ImageGenerationModel } from './types';
-import { ASPECT_RATIOS } from './constants';
+import { AppState, AspectRatio, ImageData, VisualStyle, AppMode, ChatMessage, ImageGenerationModel, PosterEngine, RemixEngine, PosterGenerationModel } from './types';
+import { ASPECT_RATIOS, POSTER_ENGINES, REMIX_ENGINES, IMAGE_GENERATION_MODELS, POSTER_GENERATION_MODELS, DAILY_GENERATION_QUOTA } from './constants';
 import * as geminiService from './services/geminiService';
 import { ImageUploader } from './components/ImageUploader';
 import { AspectRatioSelector } from './components/AspectRatioSelector';
@@ -14,6 +14,9 @@ import { ChatInterface } from './components/ChatInterface';
 import { Chat } from '@google/genai';
 import { ModelSelector } from './components/ModelSelector';
 import { VariationSelector } from './components/VariationSelector';
+import { Logo } from './components/Logo';
+import { EngineSelector } from './components/EngineSelector';
+import { TokenDisplay } from './components/TokenDisplay';
 
 const App: React.FC = () => {
     // General State
@@ -22,11 +25,16 @@ const App: React.FC = () => {
     const [loadingMessage, setLoadingMessage] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
     const [finalPosters, setFinalPosters] = useState<ImageData[]>([]);
+    const [adCopy, setAdCopy] = useState<string | null>(null);
+    const [remainingGenerations, setRemainingGenerations] = useState<number>(DAILY_GENERATION_QUOTA);
+    const FREE_MODELS: (ImageGenerationModel | PosterGenerationModel)[] = ['Gemini Nano (Free)', 'Gemini Pro (Free & Unlimited)'];
 
     // Poster Forge State
     const [appState, setAppState] = useState<AppState>(AppState.UPLOADING_PRODUCT);
     const [productImage, setProductImage] = useState<ImageData | null>(null);
     const [processedProductImage, setProcessedProductImage] = useState<ImageData | null>(null);
+    const [posterGenModel, setPosterGenModel] = useState<PosterGenerationModel>('Gemini Nano (Free)');
+    const [posterEngine, setPosterEngine] = useState<PosterEngine>('Balanced');
     const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
     const [selectedStyle, setSelectedStyle] = useState<VisualStyle>('None');
     const [conceptPrompt, setConceptPrompt] = useState<string>('');
@@ -40,9 +48,11 @@ const App: React.FC = () => {
     const [imageGenPrompt, setImageGenPrompt] = useState<string>('');
     const [imageGenAspectRatio, setImageGenAspectRatio] = useState<AspectRatio>('1:1');
     const [imageGenStyle, setImageGenStyle] = useState<VisualStyle>('None');
-    const [imageGenModel, setImageGenModel] = useState<ImageGenerationModel>('Imagen 4.0');
+    const [imageGenModel, setImageGenModel] = useState<ImageGenerationModel>('Gemini Nano (Free)');
     const [generatedImages, setGeneratedImages] = useState<ImageData[] | null>(null);
     const [imageGenVariations, setImageGenVariations] = useState<number>(1);
+    const [imageGenNegativePrompt, setImageGenNegativePrompt] = useState<string>('');
+    const [imageGenSeed, setImageGenSeed] = useState<string>('');
 
     // AI Assistant State
     const [assistantImage, setAssistantImage] = useState<ImageData | null>(null);
@@ -52,6 +62,21 @@ const App: React.FC = () => {
     const [chatIsLoading, setChatIsLoading] = useState(false);
     const [assistantGeneratedImage, setAssistantGeneratedImage] = useState<ImageData | null>(null);
 
+    // Remix Mode State
+    const [baseImage, setBaseImage] = useState<ImageData | null>(null);
+    const [sourceImage, setSourceImage] = useState<ImageData | null>(null);
+    const [remixPrompt, setRemixPrompt] = useState<string>('');
+    const [remixEngine, setRemixEngine] = useState<RemixEngine>('Subtle');
+    const [remixedImage, setRemixedImage] = useState<ImageData | null>(null);
+
+    // Logo Generator State
+    const [logoPrompt, setLogoPrompt] = useState<string>('');
+    const [logoStyle, setLogoStyle] = useState<VisualStyle>('Minimalist');
+    const [logoColors, setLogoColors] = useState<string>('');
+    const [logoVariations, setLogoVariations] = useState<number>(4);
+    const [generatedLogos, setGeneratedLogos] = useState<ImageData[] | null>(null);
+    const [logoGenModel, setLogoGenModel] = useState<ImageGenerationModel>('Gemini Nano (Free)');
+
 
     useEffect(() => {
         if (appMode === 'assistant' && !chatSession) {
@@ -60,7 +85,33 @@ const App: React.FC = () => {
         }
     }, [appMode, chatSession]);
 
+    useEffect(() => {
+      const today = new Date().toISOString().split('T')[0];
+      const storedDate = localStorage.getItem('designForgeQuotaDate');
+      const storedQuota = localStorage.getItem('designForgeQuota');
+
+      if (storedDate === today && storedQuota !== null) {
+        setRemainingGenerations(parseInt(storedQuota, 10));
+      } else {
+        localStorage.setItem('designForgeQuotaDate', today);
+        localStorage.setItem('designForgeQuota', String(DAILY_GENERATION_QUOTA));
+        setRemainingGenerations(DAILY_GENERATION_QUOTA);
+      }
+    }, []);
+
+    const consumeGenerations = useCallback((count: number): boolean => {
+      if (remainingGenerations < count) {
+        setError(`You need ${count} generation credits, but you only have ${remainingGenerations} left. Your credits will reset tomorrow.`);
+        return false;
+      }
+      const newCount = remainingGenerations - count;
+      setRemainingGenerations(newCount);
+      localStorage.setItem('designForgeQuota', String(newCount));
+      return true;
+    }, [remainingGenerations]);
+
     const handleProductImageUpload = useCallback(async (image: ImageData) => {
+        if (!consumeGenerations(1)) return;
         setIsLoading(true);
         setLoadingMessage('Analyzing product and removing background...');
         setError(null);
@@ -76,19 +127,25 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [consumeGenerations]);
 
     const handleGeneratePoster = useCallback(async () => {
         if (!processedProductImage || !conceptPrompt) {
             setError('Please provide a product image and a concept.');
             return;
         }
+        if (!FREE_MODELS.includes(posterGenModel) && !consumeGenerations(posterVariations)) return;
         setIsLoading(true);
         setLoadingMessage(`Forging ${posterVariations} poster(s) with AI...`);
         setError(null);
+        setAdCopy(null);
+        setGeneratedImages(null);
+        setRemixedImage(null);
+        setAssistantGeneratedImage(null);
+        setGeneratedLogos(null);
         setAppState(AppState.GENERATING_POSTER);
         try {
-            const posters = await geminiService.generatePoster(processedProductImage, conceptPrompt, aspectRatio, selectedStyle, referenceImage, posterVariations);
+            const posters = await geminiService.generatePoster(processedProductImage, conceptPrompt, aspectRatio, selectedStyle, referenceImage, posterVariations, posterEngine, posterGenModel);
             setCurrentPosters(posters);
             setSelectedPosterIndex(0);
             setAppState(AppState.EDITING);
@@ -101,7 +158,7 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [processedProductImage, conceptPrompt, aspectRatio, selectedStyle, referenceImage, posterVariations]);
+    }, [processedProductImage, conceptPrompt, aspectRatio, selectedStyle, referenceImage, posterVariations, posterEngine, posterGenModel, consumeGenerations, FREE_MODELS]);
     
     const handleEditPoster = useCallback(async (prompt: string) => {
         if (!currentPosters || currentPosters.length === 0) {
@@ -112,9 +169,11 @@ const App: React.FC = () => {
             setError('Please provide an edit instruction or select a different style to apply.');
             return;
         }
+        if (!consumeGenerations(1)) return;
         setIsLoading(true);
         setLoadingMessage('Applying your creative edits...');
         setError(null);
+        setAdCopy(null);
         try {
             const imageToEdit = currentPosters[selectedPosterIndex];
             const editedPoster = await geminiService.editPoster(imageToEdit, prompt, selectedStyle);
@@ -126,27 +185,60 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [currentPosters, selectedStyle, selectedPosterIndex]);
+    }, [currentPosters, selectedStyle, selectedPosterIndex, consumeGenerations]);
 
     const handleGenerateImage = useCallback(async () => {
         if (!imageGenPrompt.trim()) {
             setError('Please enter a prompt to generate an image.');
             return;
         }
+        if (!FREE_MODELS.includes(imageGenModel) && !consumeGenerations(imageGenVariations)) return;
         setIsLoading(true);
         setLoadingMessage(`Generating ${imageGenVariations} image(s) with AI...`);
         setError(null);
+        setAdCopy(null);
+        setCurrentPosters(null);
+        setRemixedImage(null);
+        setAssistantGeneratedImage(null);
+        setGeneratedLogos(null);
         try {
-            const images = await geminiService.generateImage(imageGenPrompt, imageGenAspectRatio, imageGenStyle, imageGenModel, imageGenVariations);
+            const seedValue = imageGenSeed.trim() ? parseInt(imageGenSeed, 10) : undefined;
+            const seed = seedValue && !isNaN(seedValue) ? seedValue : undefined;
+            const images = await geminiService.generateImage(imageGenPrompt, imageGenAspectRatio, imageGenStyle, imageGenModel, imageGenVariations, imageGenNegativePrompt, seed);
             setGeneratedImages(images);
         } catch (e: any) {
             setError(e.message);
         } finally {
             setIsLoading(false);
         }
-    }, [imageGenPrompt, imageGenAspectRatio, imageGenStyle, imageGenModel, imageGenVariations]);
+    }, [imageGenPrompt, imageGenAspectRatio, imageGenStyle, imageGenModel, imageGenVariations, imageGenNegativePrompt, imageGenSeed, consumeGenerations, FREE_MODELS]);
+
+    const handleGenerateLogo = useCallback(async () => {
+        if (!logoPrompt.trim()) {
+            setError('Please describe the logo you want to create.');
+            return;
+        }
+        if (!FREE_MODELS.includes(logoGenModel) && !consumeGenerations(logoVariations)) return;
+        setIsLoading(true);
+        setLoadingMessage(`Generating ${logoVariations} logo concepts...`);
+        setError(null);
+        setAdCopy(null);
+        setCurrentPosters(null);
+        setGeneratedImages(null);
+        setRemixedImage(null);
+        setAssistantGeneratedImage(null);
+        try {
+            const logos = await geminiService.generateLogo(logoPrompt, logoStyle, logoColors, logoVariations, logoGenModel);
+            setGeneratedLogos(logos);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [logoPrompt, logoStyle, logoColors, logoVariations, logoGenModel, consumeGenerations, FREE_MODELS]);
 
     const handleEnhanceAndDownload = useCallback(async (imageToEnhance: ImageData) => {
+        if (!consumeGenerations(1)) return;
         setIsLoading(true);
         setLoadingMessage('Enhancing image to high quality...');
         setError(null);
@@ -155,7 +247,7 @@ const App: React.FC = () => {
             
             const link = document.createElement('a');
             link.href = `data:${enhancedImage.mimeType};base64,${enhancedImage.base64}`;
-            link.download = `poster-forge-hd-${Date.now()}.png`;
+            link.download = `design-forge-hd-${Date.now()}.png`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -165,7 +257,7 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [consumeGenerations]);
 
     const handleGeneratePromptFromImage = useCallback(async () => {
         if (!assistantImage) {
@@ -173,9 +265,8 @@ const App: React.FC = () => {
             return;
         }
         setIsLoading(true);
-        setLoadingMessage('Analyzing image and generating prompt...');
+        setLoadingMessage('Analyzing your image...');
         setError(null);
-        setGeneratedPrompt('');
         try {
             const prompt = await geminiService.generatePromptFromImage(assistantImage);
             setGeneratedPrompt(prompt);
@@ -186,29 +277,7 @@ const App: React.FC = () => {
         }
     }, [assistantImage]);
 
-    const handleGenerateImageInAssistant = useCallback(async (prompt: string) => {
-        if (!prompt.trim()) {
-            setError('Cannot generate image from an empty prompt.');
-            return;
-        }
-        setIsLoading(true);
-        setLoadingMessage('Generating your image with AI...');
-        setError(null);
-        setAssistantGeneratedImage(null); // Clear previous image
-        try {
-            // Use default settings for quick generation
-            const images = await geminiService.generateImage(prompt, '1:1', 'None', 'Imagen 4.0', 1);
-            if (images.length > 0) {
-              setAssistantGeneratedImage(images[0]);
-            }
-        } catch (e: any) {
-            setError(e.message);
-        } finally {
-            setIsLoading(false);
-        }
-    }, []);
-
-    const handleSendChatMessage = useCallback(async (message: string, image?: ImageData) => {
+    const handleSendMessage = useCallback(async (message: string, image?: ImageData) => {
         if (!chatSession) return;
 
         const userMessage: ChatMessage = { role: 'user', parts: [] };
@@ -218,281 +287,606 @@ const App: React.FC = () => {
         if (image) {
             userMessage.parts.push({ image });
         }
-        if(userMessage.parts.length === 0) return;
 
         setChatHistory(prev => [...prev, userMessage]);
         setChatIsLoading(true);
-        setError(null);
 
         try {
-            const messageParts = [];
-            if (image) {
-                messageParts.push({ inlineData: { data: image.base64, mimeType: image.mimeType } });
-            }
-            if (message.trim()) {
-                messageParts.push({ text: message });
-            }
-            
-            const result = await chatSession.sendMessage({ message: messageParts });
-            const modelResponse: ChatMessage = { role: 'model', parts: [{ text: result.text }] };
-            setChatHistory(prev => [...prev, modelResponse]);
+            const result = await chatSession.sendMessage({ message: userMessage.parts });
+            const modelMessage: ChatMessage = { role: 'model', parts: [{ text: result.text }] };
+            setChatHistory(prev => [...prev, modelMessage]);
         } catch (e: any) {
-            if (e.message && (e.message.toLowerCase().includes('quota') || e.message.toLowerCase().includes('limit'))) {
-                setError("You've reached the daily chat limit with the assistant. Please try again tomorrow.");
-            } else {
-                setError('The AI assistant is currently unavailable. Please try again later.');
-            }
-            console.error(e);
+            setError(e.message);
+            const errorMessage: ChatMessage = { role: 'model', parts: [{ text: `Sorry, I encountered an error: ${e.message}` }] };
+            setChatHistory(prev => [...prev, errorMessage]);
         } finally {
             setChatIsLoading(false);
         }
-
     }, [chatSession]);
 
-    const handleUsePrompt = (prompt: string) => {
+    const handleUsePromptForImageGen = useCallback((prompt: string) => {
         setAppMode('image');
         setImageGenPrompt(prompt);
-        setGeneratedImages(null); // Clear previous image
-    };
-    
-    const handleCopyToClipboard = (text: string) => {
-        navigator.clipboard.writeText(text);
-        // Optional: show a toast notification
+        setImageGenAspectRatio('1:1');
+        setImageGenStyle('None');
+        setGeneratedImages(null);
+    }, []);
+
+    const handleCopyToClipboard = (prompt: string) => {
+        navigator.clipboard.writeText(prompt);
     };
 
-    const handleStartOver = () => {
-        setAppState(AppState.UPLOADING_PRODUCT);
-        setProductImage(null);
-        setProcessedProductImage(null);
-        setConceptPrompt('');
-        setEditPrompt('');
-        setReferenceImage(null);
-        setCurrentPosters(null);
-        setError(null);
-        setSelectedStyle('None');
-    };
-
-    const handleCloseCanvasImage = () => {
-        if (appMode === 'poster') {
-            setCurrentPosters(null);
-            // Revert to the step where they can generate a poster again.
-            setAppState(AppState.PROVIDING_CONCEPT); 
-        } else if (appMode === 'image') {
-            setGeneratedImages(null);
-        } else if (appMode === 'assistant') {
-            setAssistantGeneratedImage(null);
+    const generateImageWithPrompt = useCallback(async (prompt: string) => {
+         if (!prompt.trim()) {
+            setError('Please enter a prompt to generate an image.');
+            return;
         }
+        if (!FREE_MODELS.includes(imageGenModel)) {
+            if (!consumeGenerations(1)) return;
+        }
+        setIsLoading(true);
+        setLoadingMessage(`Generating image with AI...`);
+        setError(null);
+        setAdCopy(null);
+        setCurrentPosters(null);
+        setRemixedImage(null);
+        setGeneratedLogos(null);
+        try {
+            const images = await geminiService.generateImage(prompt, imageGenAspectRatio, imageGenStyle, imageGenModel, 1, '', undefined);
+            setAssistantGeneratedImage(images[0]);
+            setGeneratedImages(images);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [imageGenAspectRatio, imageGenStyle, imageGenModel, consumeGenerations, FREE_MODELS]);
+    
+    const handleGenerateImageFromAssistant = (prompt: string) => {
+        setAppMode('image');
+        setImageGenPrompt(prompt);
+        generateImageWithPrompt(prompt);
+    };
+
+    const handleGenerateAdCopy = useCallback(async (image: ImageData) => {
+        setIsLoading(true);
+        setLoadingMessage('Generating creative ad copy...');
+        setError(null);
+        setAdCopy(null);
+        try {
+            const copy = await geminiService.generateAdCopy(image);
+            setAdCopy(copy);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setIsLoading(false);
+        }
+    }, []);
+    
+    const handleRemixImage = useCallback(async () => {
+        if (!baseImage || !sourceImage) {
+            setError('Please provide both a base and a source image.');
+            return;
+        }
+        if (!remixPrompt.trim()) {
+            setError('Please provide instructions for the remix.');
+            return;
+        }
+        if (!consumeGenerations(1)) return;
+        setIsLoading(true);
+        setLoadingMessage('Remixing your images with AI...');
+        setError(null);
+        setAdCopy(null);
+        setCurrentPosters(null);
+        setGeneratedImages(null);
+        setAssistantGeneratedImage(null);
+        setGeneratedLogos(null);
+        try {
+            const result = await geminiService.remixImage(baseImage, sourceImage, remixPrompt, remixEngine);
+            setRemixedImage(result);
+        } catch (e: any) {
+            setError(e.message);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [baseImage, sourceImage, remixPrompt, remixEngine, consumeGenerations]);
+
+    const currentPoster = useMemo(() => {
+        if (currentPosters && currentPosters.length > selectedPosterIndex) {
+            return currentPosters[selectedPosterIndex];
+        }
+        return null;
+    }, [currentPosters, selectedPosterIndex]);
+
+    const addToFinalPosters = useCallback((image: ImageData) => {
+        setFinalPosters(prev => {
+            if (prev.some(p => p.base64 === image.base64)) {
+                return prev;
+            }
+            return [...prev, image];
+        });
+    }, []);
+
+    const getAspectRatioClassName = (ratio: AspectRatio): string => {
+        const map: Record<AspectRatio, string> = {
+            '1:1': 'aspect-square',
+            '9:16': 'aspect-[9/16]',
+            '16:9': 'aspect-[16/9]',
+            '3:4': 'aspect-[3/4]',
+            '4:3': 'aspect-[4/3]',
+        };
+        return map[ratio] || 'aspect-square';
     };
     
-    const isGenerating = useMemo(() => isLoading, [isLoading]);
-
-    const getModeButtonClass = (mode: AppMode) => {
-        return `flex-1 py-3 px-2 text-center font-semibold transition-colors duration-200 flex items-center justify-center gap-2 text-xs sm:text-sm ${
-            appMode === mode
-                ? 'bg-zinc-800/50 text-lime-400 border-b-2 border-lime-400'
-                : 'bg-transparent text-zinc-500 hover:bg-zinc-800/50'
-        }`;
+    const renderStep = (stepNumber: number, title: string, children: React.ReactNode, isComplete: boolean, isCurrent: boolean) => {
+        return (
+            <div className={`p-4 rounded-lg border-2 transition-all duration-300 ${isCurrent ? 'bg-zinc-800/50 border-lime-500/50' : isComplete ? 'bg-zinc-800/30 border-zinc-700' : 'bg-zinc-800/30 border-transparent'}`}>
+                <h3 className="text-lg font-bold text-lime-400 mb-3 flex items-center gap-2">
+                    <span className={`flex items-center justify-center w-6 h-6 rounded-full text-sm font-bold ${isCurrent || isComplete ? 'bg-lime-500 text-black' : 'bg-zinc-700 text-zinc-300'}`}>{stepNumber}</span>
+                    {title}
+                </h3>
+                {children}
+            </div>
+        );
     };
 
-    const sectionHeaderClass = "text-lg sm:text-xl font-bold text-lime-400 mb-4 flex items-center gap-3";
-    const primaryButtonClass = "mt-4 w-full bg-lime-400 hover:bg-lime-300 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:cursor-not-allowed text-black font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-lg shadow-lime-500/20";
+    const renderLeftPanel = () => {
+        switch(appMode) {
+            case 'poster':
+                return (
+                    <div className="flex flex-col gap-4">
+                        {renderStep(1, 'Upload Product',
+                            <ImageUploader onImageUpload={handleProductImageUpload} label="Upload or Drag Product Image" />,
+                            appState !== AppState.UPLOADING_PRODUCT,
+                            appState === AppState.UPLOADING_PRODUCT
+                        )}
 
-
-    return (
-        <div className="min-h-screen bg-zinc-950 text-zinc-200 flex flex-col items-center p-4 sm:p-6 lg:p-8">
-            <header className="w-full max-w-7xl mb-8 text-center">
-                <h1 className="text-4xl sm:text-5xl font-bold text-white tracking-wider">
-                    Design<span className="text-lime-400">Forge</span>
-                </h1>
-                <p className="text-zinc-400 mt-3 text-sm">Your Vision, Perfectly Crafted</p>
-            </header>
-
-            <main className="w-full max-w-7xl flex-1 grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* Left Panel: Controls */}
-                <div className="lg:col-span-1 w-full bg-zinc-900 rounded-2xl p-6 border border-lime-500/20 shadow-2xl shadow-lime-900/50 flex flex-col">
-                    <div className="flex border-b border-lime-500/20 mb-6 -mx-6 -mt-6 rounded-t-2xl overflow-hidden">
-                        <button onClick={() => setAppMode('poster')} className={getModeButtonClass('poster')}>
-                            <Icon name="template" /> Poster
-                        </button>
-                        <button onClick={() => setAppMode('image')} className={getModeButtonClass('image')}>
-                            <Icon name="photograph" /> Generator
-                        </button>
-                         <button onClick={() => setAppMode('assistant')} className={getModeButtonClass('assistant')}>
-                            <Icon name="assistant" /> Assistant
-                        </button>
-                    </div>
-
-                    {error && <div className="bg-red-900/50 border border-red-500 text-red-300 p-3 rounded-lg text-sm mb-4">{error}</div>}
-                    
-                    {appMode === 'poster' && (
-                        <div className="space-y-6">
-                            {appState === AppState.UPLOADING_PRODUCT && (
-                                <div className="animate-fade-in">
-                                    <h2 className={sectionHeaderClass}><Icon name="upload" /> Step 1: Upload Product Image</h2>
-                                    <ImageUploader onImageUpload={handleProductImageUpload} label="Click or drag to upload your product photo" />
+                        {appState !== AppState.UPLOADING_PRODUCT && renderStep(2, 'Craft Your Vision',
+                            <div className="flex flex-col gap-4">
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">AI Model</label>
+                                    <ModelSelector models={POSTER_GENERATION_MODELS} selected={posterGenModel} onSelect={(model) => setPosterGenModel(model)} />
                                 </div>
-                            )}
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Generation Engine</label>
+                                    <EngineSelector engines={POSTER_ENGINES} selected={posterEngine} onSelect={(engine) => setPosterEngine(engine)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Aspect Ratio</label>
+                                    <AspectRatioSelector selected={aspectRatio} onSelect={(ratio) => setAspectRatio(ratio)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Visual Style</label>
+                                    <StyleSelector selected={selectedStyle} onSelect={(style) => setSelectedStyle(style)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Variations</label>
+                                    <VariationSelector selected={posterVariations} onSelect={(v) => setPosterVariations(v)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Style Reference (Optional)</label>
+                                    <ImageUploader onImageUpload={setReferenceImage} label="Upload Style Image" compact={true} />
+                                    {referenceImage && <img src={`data:${referenceImage.mimeType};base64,${referenceImage.base64}`} alt="Reference" className="mt-2 rounded-md h-20 w-20 object-cover" />}
+                                </div>
+                                <PromptInput
+                                    onPromptSubmit={() => handleGeneratePoster()}
+                                    placeholder="e.g., floating on a cloud, surrounded by neon lights..."
+                                    buttonText="Forge Poster"
+                                    prompt={conceptPrompt}
+                                    setPrompt={setConceptPrompt}
+                                    isButtonDisabled={!conceptPrompt.trim() || (!FREE_MODELS.includes(posterGenModel) && remainingGenerations < posterVariations)}
+                                />
+                            </div>,
+                            appState === AppState.GENERATING_POSTER || appState === AppState.EDITING,
+                            appState === AppState.PROVIDING_CONCEPT
+                        )}
+                        
+                        {appState === AppState.EDITING && currentPoster && renderStep(3, 'Refine & Edit',
+                             <div className="flex flex-col gap-4">
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">
+                                        Editing Variation {selectedPosterIndex + 1}
+                                    </label>
+                                    <img 
+                                        src={`data:${currentPoster.mimeType};base64,${currentPoster.base64}`} 
+                                        alt={`Editing variation ${selectedPosterIndex + 1}`}
+                                        className={`w-full rounded-lg border-2 border-zinc-700 object-cover ${getAspectRatioClassName(aspectRatio)}`}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Apply Visual Style</label>
+                                    <StyleSelector selected={selectedStyle} onSelect={(style) => setSelectedStyle(style)} />
+                                </div>
+                                <PromptInput
+                                    onPromptSubmit={handleEditPoster}
+                                    placeholder="e.g., make it brighter, add a lens flare"
+                                    buttonText="Apply Edits"
+                                    isStandalone={true}
+                                    prompt={editPrompt}
+                                    setPrompt={setEditPrompt}
+                                    isButtonDisabled={(!editPrompt.trim() && selectedStyle === 'None') || remainingGenerations < 1}
+                                />
+                             </div>,
+                             false,
+                             true
+                        )}
+                    </div>
+                );
+            
+            case 'image':
+                return (
+                    <div className="flex flex-col gap-4">
+                         {renderStep(1, 'Describe Your Image',
+                            <div className="flex flex-col gap-4">
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">AI Model</label>
+                                    <ModelSelector models={IMAGE_GENERATION_MODELS} selected={imageGenModel} onSelect={(model) => setImageGenModel(model)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Aspect Ratio</label>
+                                    <AspectRatioSelector selected={imageGenAspectRatio} onSelect={(ratio) => setImageGenAspectRatio(ratio)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Visual Style</label>
+                                    <StyleSelector selected={imageGenStyle} onSelect={(style) => setImageGenStyle(style)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Variations</label>
+                                    <VariationSelector selected={imageGenVariations} onSelect={(v) => setImageGenVariations(v)} />
+                                </div>
+                                <div>
+                                    <label htmlFor="negative-prompt" className="text-sm font-semibold text-zinc-300 mb-2 block">Negative Prompt (what to avoid)</label>
+                                    <textarea
+                                        id="negative-prompt"
+                                        value={imageGenNegativePrompt}
+                                        onChange={(e) => setImageGenNegativePrompt(e.target.value)}
+                                        placeholder="e.g., text, watermarks, ugly, blurry..."
+                                        rows={2}
+                                        className="w-full p-3 bg-zinc-800 border-2 border-zinc-700 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-lime-500 focus:border-lime-500 transition"
+                                    />
+                                </div>
+                                <div>
+                                    <label htmlFor="seed-input" className="text-sm font-semibold text-zinc-300 mb-2 block">Seed (for consistent results)</label>
+                                    <input
+                                        id="seed-input"
+                                        type="text"
+                                        value={imageGenSeed}
+                                        onChange={(e) => setImageGenSeed(e.target.value.replace(/[^0-9]/g, ''))}
+                                        placeholder="Enter a number or leave blank"
+                                        className="w-full p-3 bg-zinc-800 border-2 border-zinc-700 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-lime-500 focus:border-lime-500 transition"
+                                    />
+                                </div>
+                                <PromptInput
+                                    onPromptSubmit={() => handleGenerateImage()}
+                                    placeholder="A photorealistic image of a futuristic city at sunset..."
+                                    buttonText="Generate Image"
+                                    prompt={imageGenPrompt}
+                                    setPrompt={setImageGenPrompt}
+                                    isButtonDisabled={!imageGenPrompt.trim() || (!FREE_MODELS.includes(imageGenModel) && remainingGenerations < imageGenVariations)}
+                                />
+                            </div>,
+                            !!generatedImages,
+                            !generatedImages
+                        )}
+                    </div>
+                );
 
-                            {appState >= AppState.PROVIDING_CONCEPT && processedProductImage && (
-                                <div className="animate-fade-in">
-                                    <div className="flex justify-between items-center mb-2">
-                                    <h2 className="text-lg font-semibold text-zinc-300">Product Image</h2>
-                                        <button onClick={handleStartOver} className="text-sm text-lime-400 hover:text-lime-300 transition">Start Over</button>
-                                    </div>
-                                
-                                    <img src={`data:${processedProductImage.mimeType};base64,${processedProductImage.base64}`} alt="Processed Product" className="rounded-lg border-2 border-zinc-700" />
+            case 'logo':
+                return (
+                    <div className="flex flex-col gap-4">
+                        {renderStep(1, 'Design Your Logo',
+                            <div className="flex flex-col gap-4">
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">AI Model</label>
+                                    <ModelSelector models={IMAGE_GENERATION_MODELS} selected={logoGenModel} onSelect={(model) => setLogoGenModel(model)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Visual Style</label>
+                                    <StyleSelector selected={logoStyle} onSelect={(style) => setLogoStyle(style)} />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Variations</label>
+                                    <VariationSelector selected={logoVariations} onSelect={(v) => setLogoVariations(v)} />
+                                </div>
+                                <PromptInput
+                                    onPromptSubmit={() => {}}
+                                    placeholder="e.g., A powerful eagle for a tech company"
+                                    prompt={logoPrompt}
+                                    setPrompt={setLogoPrompt}
+                                    isStandalone={true}
+                                />
+                                <PromptInput
+                                    onPromptSubmit={() => handleGenerateLogo()}
+                                    placeholder="e.g., Deep blue, electric green, silver"
+                                    buttonText="Generate Logos"
+                                    prompt={logoColors}
+                                    setPrompt={setLogoColors}
+                                    isButtonDisabled={!logoPrompt.trim() || (!FREE_MODELS.includes(logoGenModel) && remainingGenerations < logoVariations)}
+                                    rows={2}
+                                />
+                            </div>,
+                            !!generatedLogos,
+                            !generatedLogos
+                        )}
+                    </div>
+                );
+
+            case 'assistant':
+                return (
+                    <div className="flex flex-col h-full gap-4">
+                        {/* Section 1: Image to Prompt */}
+                        <div className="p-4 rounded-lg border-2 bg-zinc-800/30 border-zinc-700">
+                            <h3 className="text-lg font-bold text-lime-400 mb-3 flex items-center gap-2">
+                                <Icon name="lightbulb" className="w-5 h-5" />
+                                Get Prompt from Image
+                            </h3>
+                            <ImageUploader onImageUpload={(img) => {
+                                setAssistantImage(img);
+                                setGeneratedPrompt(''); // Clear old prompt on new image upload
+                            }} label="Upload Image" compact={true} />
+
+                            {assistantImage && (
+                                <div className="mt-4 text-center">
+                                    <img src={`data:${assistantImage.mimeType};base64,${assistantImage.base64}`} alt="Assistant upload preview" className="rounded-lg w-full mb-3" />
+                                    <button 
+                                        onClick={handleGeneratePromptFromImage} 
+                                        disabled={isLoading}
+                                        className="w-full bg-lime-600 hover:bg-lime-500 disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-wait text-black font-bold py-2 px-4 rounded-lg transition-all duration-300 flex items-center justify-center gap-2"
+                                    >
+                                        <Icon name="assistant" className="w-5 h-5"/>
+                                        Generate Prompt
+                                    </button>
                                 </div>
                             )}
                             
-                            {appState === AppState.PROVIDING_CONCEPT && (
-                                <div className="space-y-6 animate-fade-in">
-                                    <div>
-                                        <h2 className={sectionHeaderClass}><Icon name="ratio" /> Step 2: Select Aspect Ratio</h2>
-                                        <AspectRatioSelector selected={aspectRatio} onSelect={setAspectRatio} />
-                                    </div>
-                                    <div>
-                                        <h2 className={sectionHeaderClass}><Icon name="brush" /> Step 3: Choose a Style</h2>
-                                        <StyleSelector selected={selectedStyle} onSelect={setSelectedStyle} />
-                                    </div>
-                                    <div>
-                                        <h2 className={sectionHeaderClass}><Icon name="lightbulb" /> Step 4: Describe Your Vision</h2>
-                                        <PromptInput onPromptSubmit={() => {}} prompt={conceptPrompt} setPrompt={setConceptPrompt} placeholder="e.g., A futuristic city skyline at dusk, neon lights reflecting..." isStandalone={true}/>
-                                        <div className="mt-4">
-                                            <ImageUploader onImageUpload={setReferenceImage} label="Optional: Upload a reference image" compact={true} />
-                                            {referenceImage && <p className="text-xs text-lime-400 mt-2">Reference image loaded.</p>}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <h2 className={sectionHeaderClass}><Icon name="gallery" /> Step 5: Number of Variations</h2>
-                                        <VariationSelector selected={posterVariations} onSelect={setPosterVariations} />
-                                    </div>
-                                    <div>
-                                        <button onClick={handleGeneratePoster} disabled={isGenerating || !conceptPrompt} className={primaryButtonClass}>
-                                            Forge Poster
+                            {generatedPrompt && (
+                                <div className="mt-4 p-3 bg-zinc-900 rounded-lg border border-lime-500/30">
+                                    <p className="text-sm text-zinc-300 font-mono whitespace-pre-wrap">{generatedPrompt}</p>
+                                    <div className="flex gap-2 mt-3 pt-3 border-t border-zinc-700">
+                                        <button onClick={() => handleCopyToClipboard(generatedPrompt)} className="flex-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 py-1.5 px-2 rounded-md transition flex items-center justify-center gap-1.5">
+                                            <Icon name="clipboard" className="w-4 h-4" /> Copy
+                                        </button>
+                                        <button onClick={() => handleUsePromptForImageGen(generatedPrompt)} className="flex-1 text-xs bg-lime-600 hover:bg-lime-500 text-black font-semibold py-1.5 px-2 rounded-md transition">
+                                            Use Prompt
                                         </button>
                                     </div>
                                 </div>
                             )}
-
-                            {appState === AppState.EDITING && (
-                                <div className="animate-fade-in space-y-4">
-                                    <div>
-                                        <h2 className={`${sectionHeaderClass} !mb-1`}><Icon name="edit" /> Step 6: Refine Your Poster</h2>
-                                        <p className="text-sm text-zinc-400 mb-4">Suggest changes, add elements, or alter the mood. Edits apply to the selected variation.</p>
-                                        <div>
-                                            <label className="text-sm font-semibold text-zinc-400 block mb-2">Visual Style</label>
-                                            <StyleSelector selected={selectedStyle} onSelect={setSelectedStyle} />
-                                        </div>
-                                        <PromptInput onPromptSubmit={handleEditPoster} prompt={editPrompt} setPrompt={setEditPrompt} placeholder="e.g., Change the background to a beach, add a lens flare..." buttonText="Refine" isButtonDisabled={isLoading || (!editPrompt.trim() && selectedStyle === 'None')} />
-                                    </div>
-                                </div>
-                            )}
                         </div>
-                    )}
 
-                    {appMode === 'image' && (
-                         <div className="space-y-6 animate-fade-in">
-                             <div>
-                                <h2 className={sectionHeaderClass}><Icon name="assistant" /> Step 1: Select Model</h2>
-                                <ModelSelector selected={imageGenModel} onSelect={setImageGenModel} />
-                            </div>
-                            <div>
-                                <h2 className={`${sectionHeaderClass} ${imageGenModel === 'Gemini Nano (Free)' ? 'text-zinc-500' : ''}`}><Icon name="ratio" /> Step 2: Select Aspect Ratio</h2>
-                                <AspectRatioSelector 
-                                    selected={imageGenAspectRatio} 
-                                    onSelect={setImageGenAspectRatio} 
-                                    disabled={imageGenModel === 'Gemini Nano (Free)'}
-                                />
-                                { imageGenModel === 'Gemini Nano (Free)' && <p className="text-xs text-zinc-500 mt-2">Aspect ratio is not supported by this model.</p> }
-                            </div>
-                            <div>
-                                <h2 className={sectionHeaderClass}><Icon name="brush" /> Step 3: Choose a Style</h2>
-                                <StyleSelector selected={imageGenStyle} onSelect={setImageGenStyle} />
-                            </div>
-                             <div>
-                                <h2 className={sectionHeaderClass}><Icon name="lightbulb" /> Step 4: Describe Your Image</h2>
-                                <PromptInput
-                                    onPromptSubmit={() => {}}
-                                    prompt={imageGenPrompt}
-                                    setPrompt={setImageGenPrompt}
-                                    placeholder="e.g., A photorealistic cat wearing sunglasses on a vibrant beach"
-                                    isStandalone={true}
-                                />
-                             </div>
-                             <div>
-                                <h2 className={sectionHeaderClass}><Icon name="gallery" /> Step 5: Number of Variations</h2>
-                                <VariationSelector selected={imageGenVariations} onSelect={setImageGenVariations} />
-                            </div>
-                            <div>
-                                <button onClick={handleGenerateImage} disabled={isGenerating || !imageGenPrompt.trim()} className={primaryButtonClass}>
-                                    Generate Image
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {appMode === 'assistant' && (
-                        <div className="space-y-6 animate-fade-in flex flex-col flex-1 min-h-0">
-                            <div className="space-y-4">
-                                <h2 className={sectionHeaderClass}><Icon name="photograph" /> Image to Prompt</h2>
-                                {assistantImage && (
-                                    <img src={`data:${assistantImage.mimeType};base64,${assistantImage.base64}`} alt="Uploaded for prompt generation" className="rounded-lg border-2 border-zinc-700 max-h-40 w-full object-contain" />
-                                )}
-                                <ImageUploader onImageUpload={setAssistantImage} label={assistantImage ? "Upload a different image" : "Upload an image"} compact={true} />
-                                <button onClick={handleGeneratePromptFromImage} disabled={isGenerating || !assistantImage} className="w-full bg-lime-600 hover:bg-lime-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-black font-bold py-2 px-4 rounded-lg transition-all duration-300">
-                                    Generate Prompt
-                                </button>
-                                {generatedPrompt && (
-                                    <div className="p-3 bg-zinc-800 border border-zinc-700 rounded-lg">
-                                        <p className="text-sm text-zinc-300">{generatedPrompt}</p>
-                                        <div className="flex gap-2 mt-2">
-                                            <button onClick={() => handleCopyToClipboard(generatedPrompt)} className="flex-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 py-1 px-2 rounded-md transition flex items-center justify-center gap-1"><Icon name="clipboard" className="w-4 h-4" /> Copy</button>
-                                            <button onClick={() => handleUsePrompt(generatedPrompt)} className="flex-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 font-semibold py-1 px-2 rounded-md transition">Use Prompt</button>
-                                            <button onClick={() => handleGenerateImageInAssistant(generatedPrompt)} className="flex-1 text-xs bg-lime-600 hover:bg-lime-500 text-black font-semibold py-1 px-2 rounded-md transition">Generate Image</button>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                            <div className="border-t border-lime-500/20 pt-4 flex flex-col flex-1 min-h-0">
-                                <h2 className={sectionHeaderClass}><Icon name="chat" /> Chat with AI Assistant</h2>
-                                <ChatInterface
-                                    history={chatHistory}
-                                    onSendMessage={handleSendChatMessage}
-                                    isLoading={chatIsLoading}
-                                    onUsePrompt={handleUsePrompt}
+                        {/* Section 2: Chat Assistant */}
+                        <div className="flex flex-col flex-1 min-h-0">
+                            <h3 className="text-lg font-bold text-lime-400 mb-2 flex items-center gap-2 px-1">
+                                <Icon name="chat" className="w-5 h-5" />
+                                Chat with Assistant
+                            </h3>
+                            <p className="text-sm text-zinc-400 mb-3 px-1">Or, refine your ideas conversationally.</p>
+                            <div className="flex-1 min-h-0">
+                                <ChatInterface 
+                                    history={chatHistory} 
+                                    isLoading={chatIsLoading} 
+                                    onSendMessage={handleSendMessage}
+                                    onUsePrompt={handleUsePromptForImageGen}
                                     onCopyToClipboard={handleCopyToClipboard}
-                                    onGenerateImage={handleGenerateImageInAssistant}
+                                    onGenerateImage={handleGenerateImageFromAssistant}
                                 />
                             </div>
                         </div>
-                    )}
-                </div>
+                    </div>
+                );
+            
+            case 'remix':
+                return (
+                    <div className="flex flex-col gap-4">
+                        {renderStep(1, 'Base Image',
+                            <ImageUploader onImageUpload={setBaseImage} label="Upload Base Image" />,
+                            !!baseImage,
+                            !baseImage
+                        )}
+                        {baseImage && renderStep(2, 'Source Image',
+                            <ImageUploader onImageUpload={setSourceImage} label="Upload Style/Content Source" />,
+                            !!sourceImage,
+                            !sourceImage
+                        )}
+                        {baseImage && sourceImage && renderStep(3, 'Remix Instructions',
+                            <div className="flex flex-col gap-4">
+                                <div>
+                                    <label className="text-sm font-semibold text-zinc-300 mb-2 block">Remix Engine</label>
+                                    <EngineSelector engines={REMIX_ENGINES} selected={remixEngine} onSelect={(engine) => setRemixEngine(engine)} />
+                                </div>
+                                <PromptInput
+                                    onPromptSubmit={handleRemixImage}
+                                    placeholder="e.g., Turn the person into a robot, using the style of the second image."
+                                    buttonText="Remix Images"
+                                    prompt={remixPrompt}
+                                    setPrompt={setRemixPrompt}
+                                    isButtonDisabled={!remixPrompt.trim() || remainingGenerations < 1}
+                                />
+                            </div>,
+                            !!remixedImage,
+                            !remixedImage
+                        )}
+                    </div>
+                );
 
-                {/* Right Panel: Canvas */}
-                <div className="lg:col-span-2 w-full bg-black/30 rounded-2xl p-6 border border-lime-500/20 flex items-center justify-center min-h-[60vh]">
-                    {isGenerating ? (
-                        <Loader message={loadingMessage} />
-                    ) : (appMode === 'image' && generatedImages) ? (
-                        <PosterCanvas posters={generatedImages} onAddToPanel={img => setFinalPosters(prev => [...prev, img])} onEnhanceAndDownload={handleEnhanceAndDownload} onClose={handleCloseCanvasImage} />
-                    ) : (appMode === 'poster' && currentPosters) ? (
-                        <PosterCanvas posters={currentPosters} onAddToPanel={img => setFinalPosters(prev => [...prev, img])} onEnhanceAndDownload={handleEnhanceAndDownload} onClose={handleCloseCanvasImage} selectedIndex={selectedPosterIndex} onSelectIndex={setSelectedPosterIndex} />
-                    ) : (appMode === 'assistant' && assistantGeneratedImage) ? (
-                        <PosterCanvas posters={[assistantGeneratedImage]} onAddToPanel={img => setFinalPosters(prev => [...prev, img])} onEnhanceAndDownload={handleEnhanceAndDownload} onClose={handleCloseCanvasImage} />
-                    ) : (
-                        <div className="text-center text-zinc-600">
-                           <Icon name={appMode === 'assistant' ? 'assistant' : appMode === 'image' ? 'photograph' : 'art'} className="w-16 h-16 sm:w-24 sm:h-24 mx-auto mb-4 text-zinc-700" />
-                           <p className="text-xl font-semibold">
-                                {appMode === 'assistant' ? 'Your AI Creative Partner' : appMode === 'image' ? 'Your generated image will appear here' : 'Your creative poster will appear here'}
-                           </p>
-                           <p className="text-zinc-500">
-                               {appMode === 'assistant' ? 'Use the tools on the left to generate prompts' : appMode === 'image' ? 'Describe the image you want to create' : 'Follow the steps on the left to begin'}
-                           </p>
+            default:
+                return null;
+        }
+    };
+    
+    const renderCanvas = () => {
+        if (isLoading) {
+            return <Loader message={loadingMessage} />;
+        }
+        
+        const mainContent = (() => {
+            switch(appMode) {
+                case 'poster':
+                    if (appState === AppState.EDITING && currentPosters) {
+                        return <PosterCanvas 
+                                    posters={currentPosters}
+                                    onAddToPanel={addToFinalPosters} 
+                                    onEnhanceAndDownload={handleEnhanceAndDownload} 
+                                    selectedIndex={selectedPosterIndex}
+                                    onSelectIndex={setSelectedPosterIndex}
+                                    onGenerateAdCopy={handleGenerateAdCopy}
+                                    adCopy={adCopy}
+                                    onClearAdCopy={() => setAdCopy(null)}
+                                    remainingGenerations={remainingGenerations}
+                                />;
+                    }
+                    if (appState === AppState.PROVIDING_CONCEPT && processedProductImage) {
+                         return (
+                            <div className="w-full h-full flex items-center justify-center p-4">
+                                <div className="text-center">
+                                    <img src={`data:${processedProductImage.mimeType};base64,${processedProductImage.base64}`} alt="Processed Product" className="max-w-full max-h-[60vh] mx-auto rounded-lg shadow-2xl shadow-black/50" />
+                                    <p className="mt-4 text-zinc-400">Background removed. Ready for a concept!</p>
+                                </div>
+                            </div>
+                        );
+                    }
+                    if (appState === AppState.UPLOADING_PRODUCT || appState === AppState.PROCESSING_PRODUCT) {
+                         return (
+                            <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                                <Icon name="template" className="w-24 h-24 text-zinc-700 mb-4"/>
+                                <h2 className="text-2xl font-bold text-zinc-300">Welcome to Poster Forge</h2>
+                                <p className="text-zinc-500 max-w-md">Start by uploading a product image. The AI will remove the background, allowing you to create stunning marketing visuals.</p>
+                            </div>
+                        );
+                    }
+                    return null;
+                
+                case 'image':
+                    if (generatedImages) {
+                         return <PosterCanvas 
+                                    posters={generatedImages}
+                                    onAddToPanel={addToFinalPosters} 
+                                    onEnhanceAndDownload={handleEnhanceAndDownload} 
+                                    onGenerateAdCopy={handleGenerateAdCopy}
+                                    adCopy={adCopy}
+                                    onClearAdCopy={() => setAdCopy(null)}
+                                    onClose={() => setGeneratedImages(null)}
+                                    remainingGenerations={remainingGenerations}
+                                />;
+                    }
+                    return (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                            <Icon name="photograph" className="w-24 h-24 text-zinc-700 mb-4"/>
+                            <h2 className="text-2xl font-bold text-zinc-300">Image Generator</h2>
+                            <p className="text-zinc-500 max-w-md">Describe any scene, object, or character, and watch the AI bring your words to life. Select your model and style to begin.</p>
                         </div>
-                    )}
-                </div>
+                    );
+
+                case 'logo':
+                    if (generatedLogos) {
+                        return <PosterCanvas
+                                    posters={generatedLogos}
+                                    onAddToPanel={addToFinalPosters}
+                                    onEnhanceAndDownload={handleEnhanceAndDownload}
+                                    onClose={() => setGeneratedLogos(null)}
+                                    remainingGenerations={remainingGenerations}
+                                />
+                    }
+                     return (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                            <Icon name="logo" className="w-24 h-24 text-zinc-700 mb-4"/>
+                            <h2 className="text-2xl font-bold text-zinc-300">Logo Generator</h2>
+                            <p className="text-zinc-500 max-w-md">Create a professional vector-style logo for your brand. Describe your concept, choose a style, and let the AI do the rest.</p>
+                        </div>
+                    );
+
+                case 'assistant':
+                    if (assistantGeneratedImage) {
+                         return <PosterCanvas 
+                                    posters={[assistantGeneratedImage]}
+                                    onAddToPanel={addToFinalPosters} 
+                                    onEnhanceAndDownload={handleEnhanceAndDownload}
+                                    onClose={() => setAssistantGeneratedImage(null)}
+                                    remainingGenerations={remainingGenerations}
+                                />;
+                    }
+                    return (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                            <Icon name="assistant" className="w-24 h-24 text-zinc-700 mb-4"/>
+                            <h2 className="text-2xl font-bold text-zinc-300">AI Prompt Assistant</h2>
+                            <p className="text-zinc-500 max-w-md">Stuck for ideas? Chat with the AI, upload reference images, and collaborate to create the perfect prompt for your next masterpiece.</p>
+                        </div>
+                    );
+                
+                case 'remix':
+                     if (remixedImage) {
+                         return <PosterCanvas 
+                                    posters={[remixedImage]}
+                                    onAddToPanel={addToFinalPosters} 
+                                    onEnhanceAndDownload={handleEnhanceAndDownload}
+                                    onClose={() => setRemixedImage(null)}
+                                    remainingGenerations={remainingGenerations}
+                                />;
+                    }
+                    return (
+                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                            <Icon name="remix" className="w-24 h-24 text-zinc-700 mb-4"/>
+                            <h2 className="text-2xl font-bold text-zinc-300">Image Remix</h2>
+                            <p className="text-zinc-500 max-w-md">Combine two images in creative ways. Use one as a base and another as a style or content source. Tell the AI how to blend them.</p>
+                        </div>
+                    );
+
+                default:
+                    return null;
+            }
+        })();
+
+        return (
+            <div className="relative w-full h-full bg-black/30 rounded-lg overflow-hidden border border-zinc-800">
+                {mainContent}
+                {error && (
+                    <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-800/90 text-white p-4 rounded-lg shadow-lg z-20 max-w-md w-full text-center animate-fade-in-down">
+                        <p className="font-bold">An error occurred</p>
+                        <p className="text-sm">{error}</p>
+                        <button onClick={() => setError(null)} className="absolute top-1 right-1 p-1 text-white hover:text-red-200">
+                            <Icon name="close" className="w-4 h-4"/>
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    };
+    
+    const ModeButton = ({ mode, label, icon }: { mode: AppMode, label: string, icon: string }) => (
+        <button
+            onClick={() => setAppMode(mode)}
+            className={`flex-1 p-3 rounded-lg text-sm font-semibold transition-all flex flex-col sm:flex-row items-center justify-center gap-2 border-2 ${appMode === mode ? 'bg-lime-400 border-lime-400 text-black shadow-lg shadow-lime-500/20' : 'bg-zinc-800 border-transparent hover:border-lime-500'}`}
+        >
+            <Icon name={icon} className="w-5 h-5" />
+            {label}
+        </button>
+    );
+
+    return (
+        <div className="h-screen w-screen bg-zinc-950 text-zinc-200 flex flex-col p-4 gap-4">
+            <header className="flex-shrink-0 flex flex-col md:flex-row justify-between items-center gap-4">
+                <Logo />
+                <TokenDisplay remaining={remainingGenerations} total={DAILY_GENERATION_QUOTA} />
+            </header>
+
+            <div className="flex flex-col sm:flex-row gap-4 flex-shrink-0">
+                <ModeButton mode="poster" label="Poster Forge" icon="template" />
+                <ModeButton mode="image" label="Image Gen" icon="photograph" />
+                <ModeButton mode="logo" label="Logo Gen" icon="logo" />
+                <ModeButton mode="remix" label="Remix" icon="remix" />
+                <ModeButton mode="assistant" label="AI Assistant" icon="assistant" />
+            </div>
+
+            <main className="flex-1 flex gap-4 min-h-0">
+                <aside className="w-full max-w-sm flex-shrink-0 bg-zinc-900 rounded-lg p-4 overflow-y-auto">
+                    {renderLeftPanel()}
+                </aside>
+                <section className="flex-1 min-w-0">
+                   {renderCanvas()}
+                </section>
             </main>
             
-            <GeneratedImagePanel images={finalPosters} onEnhanceAndDownload={handleEnhanceAndDownload} />
+            <GeneratedImagePanel images={finalPosters} onEnhanceAndDownload={handleEnhanceAndDownload} remainingGenerations={remainingGenerations} />
         </div>
     );
 };

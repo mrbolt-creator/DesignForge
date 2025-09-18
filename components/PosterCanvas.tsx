@@ -10,9 +10,13 @@ interface PosterCanvasProps {
     onClose?: () => void;
     selectedIndex?: number;
     onSelectIndex?: (index: number) => void;
+    onGenerateAdCopy?: (image: ImageData) => void;
+    adCopy?: string | null;
+    onClearAdCopy?: () => void;
+    remainingGenerations?: number;
 }
 
-export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPanel, onEnhanceAndDownload, onClose, selectedIndex, onSelectIndex }) => {
+export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPanel, onEnhanceAndDownload, onClose, selectedIndex, onSelectIndex, onGenerateAdCopy, adCopy, onClearAdCopy, remainingGenerations }) => {
     const [showQualityMenu, setShowQualityMenu] = useState(false);
     const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
     const [isPanning, setIsPanning] = useState(false);
@@ -122,6 +126,14 @@ export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPane
         }
     };
 
+    const handlePrevious = () => {
+        setCurrentIndex((prev) => (prev - 1 + posters.length) % posters.length);
+    };
+
+    const handleNext = () => {
+        setCurrentIndex((prev) => (prev + 1) % posters.length);
+    };
+
     if (!selectedImage) return null;
 
     return (
@@ -151,9 +163,31 @@ export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPane
                 />
             </div>
 
-            {/* Thumbnails */}
+            {/* Pagination Controls and Thumbnails */}
             {posters.length > 1 && (
-                <div className="flex-shrink-0 pt-4">
+                <div className="flex-shrink-0 pt-4 flex flex-col items-center gap-4">
+                    {/* Pagination Controls */}
+                    <div className="flex items-center justify-center gap-4">
+                        <button
+                            onClick={handlePrevious}
+                            className="p-2 bg-zinc-800 rounded-full text-white hover:bg-lime-500 hover:text-black transition-all duration-200"
+                            title="Previous variation"
+                            aria-label="Previous variation"
+                        >
+                            <Icon name="chevron-left" className="w-6 h-6" />
+                        </button>
+                        <span className="font-semibold text-zinc-300 text-lg w-16 text-center">{currentIndex + 1} / {posters.length}</span>
+                        <button
+                            onClick={handleNext}
+                            className="p-2 bg-zinc-800 rounded-full text-white hover:bg-lime-500 hover:text-black transition-all duration-200"
+                            title="Next variation"
+                            aria-label="Next variation"
+                        >
+                            <Icon name="chevron-right" className="w-6 h-6" />
+                        </button>
+                    </div>
+
+                    {/* Thumbnails */}
                     <div className="flex justify-center items-center gap-2 bg-black/20 p-2 rounded-xl">
                         {posters.map((img, index) => (
                             <button 
@@ -176,6 +210,15 @@ export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPane
 
             {/* Top Right Controls */}
             <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10">
+                {onGenerateAdCopy && (
+                    <button
+                        onClick={() => onGenerateAdCopy(selectedImage)}
+                        className="p-3 bg-zinc-900/80 rounded-full text-white hover:bg-lime-500 hover:text-black transition-all cursor-pointer"
+                        title="Generate Ad Copy"
+                    >
+                        <Icon name="ad-copy" className="w-5 h-5" />
+                    </button>
+                )}
                 {onClose && (
                     <button
                         onClick={onClose}
@@ -199,6 +242,7 @@ export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPane
                             onEnhanceAndDownload={onEnhanceAndDownload}
                             onClose={() => setShowQualityMenu(false)}
                             className="top-full mt-2 right-0 w-48"
+                            remainingGenerations={remainingGenerations}
                         />
                     )}
                 </div>
@@ -225,6 +269,35 @@ export const PosterCanvas: React.FC<PosterCanvasProps> = ({ posters, onAddToPane
                     <Icon name="zoom-in" className="w-5 h-5"/>
                 </button>
             </div>
+
+            {/* Ad Copy Modal */}
+            {adCopy && onClearAdCopy && (
+                <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20 animate-fade-in p-4">
+                    <div className="bg-zinc-900 border border-lime-500/30 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl shadow-lime-900/50">
+                        <div className="flex justify-between items-center mb-4 flex-shrink-0">
+                            <h3 className="text-xl font-bold text-lime-400 flex items-center gap-2"><Icon name="ad-copy" /> Generated Ad Copy</h3>
+                            <button
+                                onClick={onClearAdCopy}
+                                className="p-2 bg-zinc-800 rounded-full text-white hover:bg-red-600 transition-all cursor-pointer"
+                                title="Close"
+                            >
+                                <Icon name="close" className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto pr-2 flex-1">
+                            <pre className="text-zinc-300 whitespace-pre-wrap font-sans text-sm">{adCopy}</pre>
+                        </div>
+                        <button
+                            onClick={() => {
+                                if (adCopy) navigator.clipboard.writeText(adCopy);
+                            }}
+                            className="mt-4 flex-shrink-0 w-full bg-lime-600 hover:bg-lime-500 text-black font-bold py-2 px-4 rounded-lg transition-all duration-300 flex items-center justify-center gap-2"
+                        >
+                            <Icon name="clipboard" className="w-5 h-5" /> Copy to Clipboard
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

@@ -1,15 +1,42 @@
+
 import { GoogleGenAI, Modality, Chat } from "@google/genai";
-import { ImageData, VisualStyle, AspectRatio, ImageGenerationModel } from '../types';
+import { ImageData, VisualStyle, AspectRatio, ImageGenerationModel, PosterEngine, RemixEngine, PosterGenerationModel } from '../types';
 import { MODEL_IMAGE_EDIT } from '../constants';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
 
 const handleApiError = (error: any, context: string): Error => {
     console.error(`Error during ${context}:`, error);
-    if (error && error.message && (error.message.toLowerCase().includes('quota') || error.message.toLowerCase().includes('limit'))) {
-        return new Error("Failed to call the Gemini API, quota exceeded: you have reached the daily limit of requests for this model. Please select a different model, or try again tomorrow.");
+
+    const quotaErrorMessage = "You've exceeded the daily usage limit for this AI model. Please select a different model (like Gemini Nano or Gemini Pro), or try again tomorrow when your quota resets.";
+
+    // Broadly check for quota error indicators in the entire error structure.
+    // Stringify to catch everything, then check for specific properties.
+    let fullErrorString = '';
+    try {
+        fullErrorString = JSON.stringify(error).toLowerCase();
+    } catch(e) {
+        fullErrorString = String(error).toLowerCase();
     }
-    const specificMessage = `Failed to ${context}. An unexpected error occurred.`;
+    
+    const hasQuotaIndicators = 
+        fullErrorString.includes('quota') ||
+        fullErrorString.includes('rate limit') ||
+        fullErrorString.includes('resource_exhausted') ||
+        fullErrorString.includes('429');
+
+    if (hasQuotaIndicators) {
+        return new Error(quotaErrorMessage);
+    }
+
+    // For other errors, try to find a meaningful message.
+    let specificMessage = error?.error?.message || error?.message;
+
+    // If the message is still a JSON object, fall back to a generic message.
+    if (typeof specificMessage !== 'string' || specificMessage.trim().startsWith('{')) {
+        specificMessage = `Failed to ${context}. An unexpected error occurred. Please try again.`;
+    }
+
     return new Error(specificMessage);
 };
 
@@ -54,7 +81,7 @@ export const removeBackground = async (productImage: ImageData): Promise<ImageDa
             contents: {
                 parts: [
                     fileToGenerativePart(productImage),
-                    { text: 'Isolate the main product in this image and make the background transparent. Do not add any shadows or reflections.' },
+                    { text: 'Isolate the main subject from the background. Make the background transparent.' },
                 ],
             },
             config: {
@@ -79,8 +106,14 @@ export const generatePoster = async (
     style: VisualStyle,
     referenceImage: ImageData | null | undefined,
     numberOfVariations: number,
+    posterEngine: PosterEngine,
+    model: PosterGenerationModel,
 ): Promise<ImageData[]> => {
     try {
+        const engineInstruction = posterEngine === 'Vivid'
+            ? 'Create a dynamic, vibrant, high-contrast, and dramatic product poster featuring the provided product.'
+            : 'Create a futuristic, visually stunning, and catchy product poster featuring the provided product.';
+        const experimentalInstruction = model === 'Gemini Flash (Experimental)' ? 'The poster should have a highly detailed and cinematic feel, with photorealistic lighting and textures. ' : '';
         const styleInstruction = style !== 'None' ? `The overall visual style must be ${style}.` : '';
         const dimensions = getDimensionsForAspectRatio(aspectRatio);
         const dimensionInstruction = dimensions
@@ -89,7 +122,7 @@ export const generatePoster = async (
 
         const parts = [
             fileToGenerativePart(productImage),
-            { text: `Create a futuristic, visually stunning, and catchy product poster featuring the provided product.
+            { text: `${experimentalInstruction}${engineInstruction}
                Concept: "${concept}".
                ${styleInstruction}
                This is the most critical instruction: ${dimensionInstruction} Adhere to these output dimensions strictly.
@@ -166,20 +199,32 @@ export const generateImage = async (
     style: VisualStyle,
     model: ImageGenerationModel,
     numberOfVariations: number,
+    negativePrompt: string,
+    seed?: number,
 ): Promise<ImageData[]> => {
     try {
         const styleInstruction = style !== 'None' ? `${style} style. ` : '';
-        const fullPrompt = `${styleInstruction}${prompt}`;
 
         if (model === 'Imagen 4.0') {
+            const fullPrompt = `${styleInstruction}${prompt}`;
+            
+            const config: any = {
+                numberOfImages: numberOfVariations,
+                outputMimeType: 'image/png',
+                aspectRatio: aspectRatio,
+            };
+
+            if (negativePrompt.trim()) {
+                config.negativePrompt = negativePrompt;
+            }
+            if (seed !== undefined) {
+                config.seed = seed;
+            }
+
             const result = await ai.models.generateImages({
                 model: 'imagen-4.0-generate-001',
                 prompt: fullPrompt,
-                config: {
-                    numberOfImages: numberOfVariations,
-                    outputMimeType: 'image/png',
-                    aspectRatio: aspectRatio,
-                },
+                config,
             });
             
             if (!result.generatedImages || result.generatedImages.length === 0) {
@@ -190,7 +235,18 @@ export const generateImage = async (
                 base64: img.image.imageBytes,
                 mimeType: 'image/png',
             }));
-        } else { // 'Gemini Nano (Free)'
+        } else { // Any other Gemini model like 'Gemini Nano (Free)', 'Gemini Pro (Free & Unlimited)', or 'Gemini Flash (Experimental)'
+             const experimentalInstruction = model === 'Gemini Flash (Experimental)' ? 'The image should be highly detailed with a cinematic feel. ' : '';
+             const negativePromptInstruction = negativePrompt.trim() ? `\n\nImportant: Do not include the following elements in the image: ${negativePrompt}.` : '';
+             const fullPrompt = `${experimentalInstruction}${styleInstruction}${prompt}${negativePromptInstruction}`;
+             
+             const config: any = {
+                responseModalities: [Modality.IMAGE, Modality.TEXT],
+             };
+             if (seed !== undefined) {
+                config.seed = seed;
+             }
+
              const generationPromises = Array.from({ length: numberOfVariations }).map(() => 
                 ai.models.generateContent({
                     model: MODEL_IMAGE_EDIT, // 'gemini-2.5-flash-image-preview'
@@ -199,9 +255,7 @@ export const generateImage = async (
                             { text: fullPrompt },
                         ],
                     },
-                    config: {
-                        responseModalities: [Modality.IMAGE, Modality.TEXT],
-                    },
+                    config,
                 })
              );
             const results = await Promise.all(generationPromises);
@@ -217,6 +271,71 @@ export const generateImage = async (
         throw handleApiError(error, "generate the image");
     }
 };
+
+export const generateLogo = async (
+    prompt: string,
+    style: VisualStyle,
+    colors: string,
+    numberOfVariations: number,
+    model: ImageGenerationModel,
+): Promise<ImageData[]> => {
+    try {
+        const basePrompt = `A professional, modern, vector-style logo for: "${prompt}".
+The logo must be on a clean, solid, plain white background.
+It should be simple, iconic, memorable, and easily scalable for various uses.
+The design should be a flat 2D graphic icon. Avoid 3D effects, complex gradients, or photorealism.
+Crucially, do not include any text, letters, or words in the logo itself. The output must be the graphic icon only.`;
+
+        const styleInstruction = style !== 'None' ? `The visual style should be: ${style}.` : 'The visual style should be minimalist and clean.';
+        const colorInstruction = colors.trim() ? `Incorporate this color palette: ${colors}.` : '';
+        
+        const initialPromptParts = [basePrompt, styleInstruction, colorInstruction];
+
+        if (model === 'Imagen 4.0') {
+            const fullPrompt = initialPromptParts.filter(Boolean).join('\n');
+            const result = await ai.models.generateImages({
+                model: 'imagen-4.0-generate-001',
+                prompt: fullPrompt,
+                config: {
+                    numberOfImages: numberOfVariations,
+                    outputMimeType: 'image/png',
+                    aspectRatio: '1:1', // Logos are best designed in a square format
+                },
+            });
+            
+            if (!result.generatedImages || result.generatedImages.length === 0) {
+                throw new Error('AI failed to generate a logo. Please try a different prompt.');
+            }
+    
+            return result.generatedImages.map(img => ({
+                base64: img.image.imageBytes,
+                mimeType: 'image/png',
+            }));
+        } else { // Any other Gemini model like 'Gemini Nano (Free)', 'Gemini Pro (Free & Unlimited)', or 'Gemini Flash (Experimental)'
+             const experimentalInstruction = model === 'Gemini Flash (Experimental)' ? 'The logo should be abstract and conceptual.' : '';
+             const fullPrompt = [...initialPromptParts, experimentalInstruction].filter(Boolean).join('\n');
+             const generationPromises = Array.from({ length: numberOfVariations }).map(() =>
+                ai.models.generateContent({
+                    model: MODEL_IMAGE_EDIT, // 'gemini-2.5-flash-image-preview'
+                    contents: { parts: [{ text: fullPrompt }] },
+                    config: {
+                        responseModalities: [Modality.IMAGE, Modality.TEXT],
+                    },
+                })
+            );
+            const results = await Promise.all(generationPromises);
+            const generatedLogos = results.map(extractImageFromResult).filter((img): img is ImageData => img !== null);
+
+            if (generatedLogos.length === 0) {
+                throw new Error('AI failed to generate a logo with this model. Please try a different prompt or model.');
+            }
+            return generatedLogos;
+        }
+    } catch (error) {
+        throw handleApiError(error, "generate the logo");
+    }
+};
+
 
 export const enhanceImageQuality = async (image: ImageData): Promise<ImageData> => {
     try {
@@ -278,4 +397,51 @@ A photorealistic portrait of a fluffy ginger cat wearing a detailed astronaut he
             systemInstruction,
         },
     });
+};
+
+export const generateAdCopy = async (image: ImageData): Promise<string> => {
+    try {
+        const result = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: {
+                parts: [
+                    fileToGenerativePart(image),
+                    { text: 'You are a world-class marketing expert. Analyze the provided image and generate three short, catchy, and persuasive ad copy options for a social media campaign. Each option should have a headline and a body. Present the output in a clean, readable format. Do not use markdown formatting.' },
+                ],
+            },
+        });
+        return result.text;
+    } catch (error) {
+        throw handleApiError(error, "generate ad copy");
+    }
+};
+
+export const remixImage = async (baseImage: ImageData, sourceImage: ImageData, prompt: string, remixEngine: RemixEngine): Promise<ImageData> => {
+    try {
+        const engineInstruction = remixEngine === 'Artistic'
+            ? `You are a creative digital artist. Re-imagine the first image (the 'base image') using artistic elements from the second image (the 'source image'), guided by the user's instruction: "${prompt}". The result should be a creative and artistic blend. Only output the final edited image.`
+            : `You are an expert photo editor. Edit the first image (the 'base image') according to the user's instructions, using the second image (the 'source image') as a reference for content, style, or objects. The user's instruction is: "${prompt}". Only output the final edited image.`;
+
+        const result = await ai.models.generateContent({
+            model: MODEL_IMAGE_EDIT,
+            contents: {
+                parts: [
+                    fileToGenerativePart(baseImage),
+                    fileToGenerativePart(sourceImage),
+                    { text: engineInstruction },
+                ],
+            },
+            config: {
+                responseModalities: [Modality.IMAGE, Modality.TEXT],
+            },
+        });
+
+        const remixedImage = extractImageFromResult(result);
+        if (!remixedImage) {
+            throw new Error('AI could not remix the images. Please try a different instruction or different images.');
+        }
+        return remixedImage;
+    } catch (error) {
+        throw handleApiError(error, "remix the images");
+    }
 };

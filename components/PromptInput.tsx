@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 
 interface PromptInputProps {
@@ -8,6 +9,7 @@ interface PromptInputProps {
     prompt?: string;
     setPrompt?: (prompt: string) => void;
     isButtonDisabled?: boolean;
+    rows?: number;
 }
 
 export const PromptInput: React.FC<PromptInputProps> = ({
@@ -17,7 +19,8 @@ export const PromptInput: React.FC<PromptInputProps> = ({
     isStandalone = false,
     prompt: externalPrompt,
     setPrompt: externalSetPrompt,
-    isButtonDisabled
+    isButtonDisabled,
+    rows = 3
 }) => {
     const [internalPrompt, setInternalPrompt] = useState('');
     
@@ -52,7 +55,7 @@ export const PromptInput: React.FC<PromptInputProps> = ({
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={placeholder}
-                rows={3}
+                rows={rows}
                 className="w-full p-3 bg-zinc-800 border-2 border-zinc-700 rounded-lg text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-lime-500 focus:border-lime-500 transition"
             />
             {!isStandalone && (

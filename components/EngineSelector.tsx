@@ -1,25 +1,24 @@
-
 import React from 'react';
 
-interface ModelSelectorProps<T extends string> {
-    models: readonly T[];
+interface EngineSelectorProps<T extends string> {
+    engines: readonly T[];
     selected: T;
-    onSelect: (model: T) => void;
+    onSelect: (engine: T) => void;
 }
 
-export const ModelSelector = <T extends string>({ models, selected, onSelect }: ModelSelectorProps<T>) => {
+export const EngineSelector = <T extends string>({ engines, selected, onSelect }: EngineSelectorProps<T>) => {
     return (
         <div className="flex flex-wrap gap-2">
-            {models.map((model) => (
+            {engines.map((engine) => (
                 <button
-                    key={model}
-                    onClick={() => onSelect(model)}
+                    key={engine}
+                    onClick={() => onSelect(engine)}
                     className={`flex-grow p-2 rounded-lg text-xs sm:text-sm transition-all duration-200 border text-center 
-                    ${selected === model 
+                    ${selected === engine 
                         ? 'bg-lime-400 border-lime-400 text-black font-bold shadow-lg shadow-lime-500/20' 
                         : 'bg-zinc-800 border-zinc-700 hover:bg-zinc-700 hover:border-lime-500 text-zinc-300'}`}
                 >
-                    {model}
+                    {engine}
                 </button>
             ))}
         </div>
